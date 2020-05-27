@@ -128,10 +128,21 @@ aws ecr describe-repositories --repository-name web-app #to get the repo uri
 Yet, you can do the following (aka, manual process)...
 
 ```shell
-aws ecr get-login --no-include-email | sh
+# Login
+# aws ecr get-login --no-include-email | sh
+# This is preferred over the previous one. And we presuppose your region is us-east-1
+aws ecr get-login-password --region us-east-1 \
+    | docker login \
+        --password-stdin \
+        --username AWS \
+        "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.us-east-1.amazonaws.com"
+
 # Expected result: Login Succeeded
 
+# Tag image
 docker tag web-app:latest your-aws-account-id.dkr.ecr.us-east-1.amazonaws.com/web-app:latest
+
+# Push image
 docker push your-aws-account-id.dkr.ecr.us-east-1.amazonaws.com/web-app:latest
 ```
 
