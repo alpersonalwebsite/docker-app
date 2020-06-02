@@ -1,0 +1,84 @@
+version: 2.1
+
+executors:
+  custom-executor:
+    docker:
+      - image: circleci/node:lts-browsers
+
+parameters:
+  project_name:
+    type: string
+    default: web-app
+  aws_region:
+    type: string
+    default: us-east-1
+
+jobs:
+  build:
+    executor: custom-executor
+    steps:
+      - checkout
+      - setup_remote_docker
+      - restore_cache:
+          key: dependency-cache-{{ checksum "package-lock.json" }}
+      - run:
+          name: Installing local dependencies
+          command: npm install
+      - save_cache:
+          key: dependency-cache-{{ checksum "package-lock.json" }}
+          paths:
+            - node_modules
+      - persist_to_workspace:
+          root: /home/circleci/project
+          paths:
+            - src
+            - node_modules
+
+  lint:
+    executor: custom-executor
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /home/circleci/project
+      - run:
+          name: Lint
+          command: npm run lint
+
+  push:
+    executor: custom-executor
+    steps:
+      - checkout
+      - setup_remote_docker
+      - attach_workspace:
+          at: /home/circleci/project
+      - run:
+          name: Build docker image with NO cache
+          command: docker build --no-cache -t << pipeline.parameters.project_name >>:latest .
+      - run:
+          name: Tag the docker image
+          command: docker tag << pipeline.parameters.project_name >>:latest $AWS_ACCOUNT.dkr.ecr.<< pipeline.parameters.aws_region >>.amazonaws.com/<< pipeline.parameters.project_name >>:latest
+      - run:
+          name: Install AWS cli
+          command: sudo apt-get install awscli
+      - run:
+          name: Push image to ECR
+          command: |
+            aws --version
+            eval $(aws ecr get-login --region << pipeline.parameters.aws_region >>| sed 's/ \-e none//')
+            # newer versions eval $(aws ecr get-login --region << pipeline.parameters.aws_region >> --no-include-email)
+            docker push $AWS_ACCOUNT.dkr.ecr.<< pipeline.parameters.aws_region >>.amazonaws.com/<< pipeline.parameters.project_name >>:latest
+
+workflows:
+  version: 2
+  build_test_deploy:
+    jobs:
+      - build
+      - lint:
+          requires:
+            - build
+      - push:
+          requires:
+            - lint
+          filters:
+            branches:
+              only: master
