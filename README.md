@@ -139,6 +139,9 @@ aws ecr get-login-password --region us-east-1 \
 
 # Expected result: Login Succeeded
 
+# Build image
+docker build --no-cache -t web-app:latest .
+
 # Tag image
 docker tag web-app:latest your-aws-account-id.dkr.ecr.us-east-1.amazonaws.com/web-app:latest
 
