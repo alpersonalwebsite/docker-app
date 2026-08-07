@@ -7,11 +7,22 @@ produces an image you would be willing to run, and **two** pipelines that build 
 image and push it to Amazon ECR, one in Jenkins and one in CircleCI, so you can compare
 them on the same job.
 
-Originally written in **April 2020**. The app is unchanged in behaviour and the
-dependency versions are deliberately frozen there. The infrastructure walkthrough is not
+Originally written in **April 2020**, and the dependency versions are deliberately
+frozen there. The app's existing route is unchanged: `/` still answers
+`It is working!`. What did change is a new `/healthz` for the container health check,
+plus startup and shutdown behaviour, both covered below. The infrastructure walkthrough is not
 frozen: the AWS console, Jenkins' installation procedure and the AWS CLI have all moved,
 so the commands below are the ones that work today, and where something changed
 materially it is called out.
+
+**Node 14 is end of life**, since 2023-04-30 per the [Node.js release
+schedule](https://github.com/nodejs/Release/blob/main/schedule.json), and it gets no
+security fixes. It is pinned here on purpose: this repository exists to be the 2020
+project done properly, and moving the runtime would mean moving `express`, the lockfile
+and the CI images with it, which is a different exercise. Treat the image as a teaching
+artifact, not a production runtime. If you want to run something like it for real, bump
+the base image, `engines`, the CircleCI executor and the Jenkins NodeJS tool together,
+and expect `npm ci` to want a regenerated lockfile.
 
 ## The app
 
@@ -19,7 +30,7 @@ materially it is called out.
 | --- | --- |
 | `app.js` | the Express app, two routes, exports it and binds nothing |
 | `server.js` | binds the port, handles a failed bind, handles SIGTERM |
-| `constants.js` | `PORT` and `HOST` from the environment, with defaults |
+| `constants.js` | `PORT` and `HOST` from the environment, validated, with defaults |
 | `test/smoke.js` | mounts `app.js` on an ephemeral port and asserts against it |
 
 `app.js` and `server.js` used to be one file, and that is why there were no tests:
@@ -127,6 +138,24 @@ and exited 1. The README's own "check what we are logging" step used that exact 
 proof the container was working. The message is in the `listen` callback now, and there is
 an `error` handler that says what went wrong in one line.
 
+That error handler has a gap it cannot cover, which is why `constants.js` validates
+`PORT` rather than coercing it. `net.Server#listen` rejects a bad port by throwing
+**synchronously**, inside the `app.listen` call, before the `server.on('error')` line
+below it has run. So the handler never sees it. `Number(process.env.PORT) || 8080` accepts
+anything truthy, and all four of these threw:
+
+| `PORT` | coerced to | result |
+| --- | --- | --- |
+| `99999` | `99999` | `RangeError: options.port should be >= 0 and < 65536` |
+| `Infinity` | `Infinity` | `RangeError` |
+| `8080.5` | `8080.5` | `RangeError` |
+| `-1` | `-1` | `RangeError` |
+
+`constants.js` now requires an integer in 1 to 65535 and throws with a message naming the
+variable. Unset or empty still falls back to 8080; set-but-invalid fails loudly, because
+silently falling back would turn a typo in a deployment config into a service quietly
+listening on the wrong port.
+
 ## Amazon ECR
 
 ```shell
@@ -166,6 +195,13 @@ that cannot be scoped to a resource, because it does not act on one:
   ]
 }
 ```
+
+**The region in that ARN is part of the grant.** An ECR repository ARN names a region, so
+this policy authorizes `us-east-1` and nothing else. The `Jenkinsfile` has
+`AWS_REGION = 'us-east-1'` and the CircleCI config takes an `aws_region` parameter that
+defaults to the same, so out of the box they agree. Change either one without changing the
+ARN and the push fails on authorization rather than on anything that names the region, so
+it is worth keeping the three in step deliberately.
 
 The old README attached nothing in particular and had you paste an access key, so in
 practice the pipeline ran with whatever the key's owner could do.
@@ -232,7 +268,7 @@ Credentials**.
 ssh -i ~/.ssh/JenkinsKP.pem ubuntu@YOUR-EC2-PUBLIC-IP-OR-DNS
 
 sudo apt-get update
-sudo apt-get install -y fontconfig openjdk-21-jre
+sudo apt-get install -y fontconfig openjdk-21-jre unzip
 
 sudo mkdir -p /etc/apt/keyrings
 sudo wget -O /etc/apt/keyrings/jenkins-keyring.asc \
@@ -248,7 +284,7 @@ sudo apt-get install -y jenkins
 **On Amazon Linux 2023:**
 
 ```shell
-sudo dnf install -y java-21-amazon-corretto-headless git
+sudo dnf install -y java-21-amazon-corretto-headless git unzip
 
 sudo curl -fsSL -o /etc/yum.repos.d/jenkins.repo \
   https://pkg.jenkins.io/redhat-stable/jenkins.repo
@@ -258,7 +294,7 @@ sudo dnf install -y jenkins
 sudo systemctl enable --now jenkins
 ```
 
-Both resolve Jenkins **2.568.2** as of writing. The old instructions do not, and it is
+Both resolved Jenkins **2.568.2** when this was tested. The commands are unpinned, so you will get whatever the repository's current candidate is. The old instructions do not, and it is
 worth being precise about why, because most of the URLs still work:
 
 - **The signing key no longer matches the repository.** The old steps fetched
@@ -284,27 +320,65 @@ Ubuntu walkthrough, and an uninstall section in `yum` after installing with `apt
 are the two paths above now, each complete.
 
 **Docker.** The old section never actually installed it: it ended at `apt-cache policy
-docker-ce`, which only queries. Use Docker's own script, and put the Jenkins user in the
-`docker` group so the pipeline's `docker build` works without sudo:
+docker-ce`, which only queries. Install from Docker's signed apt repository, the same
+`signed-by` shape as the Jenkins repository above:
 
 ```shell
-curl -fsSL https://get.docker.com | sudo sh
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+  -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+. /etc/os-release
+echo "deb [arch=$(dpkg --print-architecture) \
+  signed-by=/etc/apt/keyrings/docker.asc] \
+  https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+
 sudo usermod -aG docker jenkins
 sudo systemctl enable --now docker
 sudo systemctl restart jenkins        # the new group only applies to new processes
 ```
 
+Not `curl -fsSL https://get.docker.com | sudo sh`, which is Docker's own convenience
+script but is also an unpinned remote program executed as root, with no signature checked
+before it runs. The repository route verifies every package against a key you installed
+deliberately, and it scopes that key to one repository. `${VERSION_CODENAME}` comes from
+`/etc/os-release` rather than being hardcoded; the old README pinned `bionic`, which is
+wrong on anything newer.
+
 Adding a user to the `docker` group is equivalent to giving it root, since it can
 `docker run -v /:/host`. On a single-purpose Jenkins host that is the trade being made;
 it is not something to do on a shared box.
 
-**AWS CLI**, which the pipeline calls directly:
+**AWS CLI**, which the pipeline calls directly. AWS distributes the installer as a zip
+rather than through a signed repository, so verify its detached signature before running
+anything out of it:
 
 ```shell
 curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip.sig" -o /tmp/awscliv2.sig
+
+# Import the AWS CLI public key, then verify. The key block is published in AWS's own
+# install documentation, which is where to copy it from:
+# https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html
+gpg --import aws-cli-public-key.asc
+gpg --verify /tmp/awscliv2.sig /tmp/awscliv2.zip     # must say "Good signature"
+
 unzip -q /tmp/awscliv2.zip -d /tmp && sudo /tmp/aws/install
 aws sts get-caller-identity           # should show the instance role
 ```
+
+The key has to come from AWS's documentation rather than from a URL here, because AWS
+publishes it inline in that page and not as a fetchable file: `curl` against the obvious
+`awscli.amazonaws.com/assets/awscli-public-key.asc` returns nothing, so any command in
+this README claiming to fetch it would be inventing an endpoint. The signature file
+itself is real and does download (566 bytes). Skipping the check entirely means running
+an unpinned remote installer as root, which is the same objection as the Docker script
+above.
 
 ### 3. Instance size and disk
 
@@ -385,15 +459,34 @@ argument against the step is the unauthenticated socket and the wrong port, not 
 `.circleci/config.yml`, same job in a different shape: `build`, then `lint` and `test` in
 parallel, then `push` on `master` only.
 
-CircleCI has no instance metadata, so this is the one place a long-lived key is
-unavoidable. Set these as project environment variables, with the key scoped to exactly
-the ECR policy above and nothing else:
+CircleCI has no instance metadata, so unlike the Jenkins pipeline it cannot use a role
+attached to the machine. Set these as project environment variables, with the key scoped
+to exactly the ECR policy above and nothing else:
 
 | Variable | Value |
 | --- | --- |
-| `AWS_ACCOUNT_ID` | your account ID |
 | `AWS_ACCESS_KEY_ID` | the CI user's key |
 | `AWS_SECRET_ACCESS_KEY` | the CI user's secret |
+
+No `AWS_ACCOUNT_ID`: the job asks STS for the account, so there is one fewer variable and
+no way for it to disagree with the key.
+
+**A static key is not the current answer, only the period-accurate one.** CircleCI Cloud
+supports OIDC now, so the modern shape is an IAM role trusted for
+`sts:AssumeRoleWithWebIdentity` from your CircleCI organization, with the job exchanging a
+short-lived token for credentials and no secret stored in the project at all. That arrived
+well after this repository's era, which is why the config here does not use it. If you keep
+the static key, treat it as a credential with a lifecycle: give it only the ECR policy
+above, rotate it on a schedule, and check CloudTrail for its use, because unlike the
+instance role it does not expire on its own.
+
+**Only the SHA tag is pushed here, where the Jenkins pipeline also moves `:latest`.** That
+asymmetry is deliberate. Jenkins has `disableConcurrentBuilds()`; CircleCI has no
+equivalent, so two `master` workflows can be in the push job at once, and if the older one
+finishes last it leaves `:latest` pointing at the earlier commit while both SHA tags stay
+correct. A mutable tag that can silently move backwards is worse than no mutable tag, so
+promotion of `:latest` belongs to the serialized pipeline or to a deliberate step of its
+own. Deploy by the SHA tag either way.
 
 Four things changed from the 2020 config:
 
