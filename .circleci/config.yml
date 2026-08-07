@@ -86,27 +86,35 @@ jobs:
       # `docker login -p <token>` command: the token lands in the process list and in
       # the build log. `get-login` was also removed in AWS CLI v2.
       #
-      # AWS_ACCOUNT_ID, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY come from the
-      # project's environment variables. CircleCI has no instance metadata, so unlike
-      # the Jenkins pipeline this one does need a key; scope its IAM policy to ECR push
-      # on this one repository, as the README shows.
+      # The account ID comes from STS rather than an AWS_ACCOUNT_ID variable, so there
+      # is one fewer thing to set and no chance of it disagreeing with the key.
+      # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY do come from the project's
+      # environment variables: CircleCI has no instance metadata, so unlike the Jenkins
+      # pipeline this one needs a key. Scope its IAM policy to ECR push on this one
+      # repository, as the README shows.
+      #
+      # This pushes ONLY the immutable SHA tag, where the Jenkins pipeline also moves
+      # :latest. That asymmetry is deliberate. Jenkins has disableConcurrentBuilds();
+      # CircleCI has no equivalent, so two master workflows can push at once and the one
+      # that finishes last wins :latest, which can leave the tag pointing at the older
+      # commit while both SHA tags are correct. A mutable tag that can silently go
+      # backwards is worse than no mutable tag, so promotion of :latest is left to the
+      # serialized pipeline or to a deliberate manual step.
       - run:
           name: Push to ECR
           command: |
-            registry_host="${AWS_ACCOUNT_ID}.dkr.ecr.<< pipeline.parameters.aws_region >>.amazonaws.com"
+            account=$(aws sts get-caller-identity --query Account --output text)
+            registry_host="${account}.dkr.ecr.<< pipeline.parameters.aws_region >>.amazonaws.com"
             registry="${registry_host}/<< pipeline.parameters.project_name >>"
             tag="${CIRCLE_SHA1:0:7}"
+
+            trap 'docker logout "$registry_host" >/dev/null 2>&1 || true' EXIT
 
             aws ecr get-login-password --region "<< pipeline.parameters.aws_region >>" \
               | docker login --username AWS --password-stdin "$registry_host"
 
             docker tag "<< pipeline.parameters.project_name >>:${tag}" "${registry}:${tag}"
-            docker tag "<< pipeline.parameters.project_name >>:${tag}" "${registry}:latest"
-
             docker push "${registry}:${tag}"
-            docker push "${registry}:latest"
-
-            docker logout "$registry_host"
 
 workflows:
   build_test_deploy:

@@ -14,11 +14,7 @@ pipeline {
 
   environment {
     AWS_REGION = 'us-east-1'
-    // Replace with your account ID. The ECR repository name is the last path segment.
-    ECR_ACCOUNT = '123456789012'
     IMAGE_NAME = 'web-app'
-    REGISTRY_HOST = "${ECR_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-    REGISTRY = "${ECR_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_NAME}"
   }
 
   tools { nodejs 'node' }
@@ -68,19 +64,33 @@ pipeline {
         // instance carries an IAM role, so the CLI picks up short-lived rotated
         // credentials from instance metadata. See the README for the policy.
         //
+        // The account ID is read from STS rather than committed. A placeholder in this
+        // file is a thing to forget: leave it unedited and the pipeline authenticates
+        // against, and pushes to, whatever account 123456789012 is. Asking STS also
+        // fails immediately and legibly when no role is attached.
+        //
         // get-login-password piped into --password-stdin, rather than the Amazon ECR
         // plugin's ecrLogin() or `aws ecr get-login`. Jenkins runs sh steps with -x, so
         // any command that takes the token as an argument prints the token into the
         // build log. Piped on stdin it never appears in an argument list.
         sh '''
+          account=$(aws sts get-caller-identity --query Account --output text)
+          registry_host="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          registry="${registry_host}/${IMAGE_NAME}"
+
+          # Log out however this block exits, so the credential does not survive in the
+          # agent's ~/.docker/config.json after a failed push. Jenkins runs sh with -e,
+          # so without a trap an error between login and the end skips the cleanup.
+          trap 'docker logout "$registry_host" >/dev/null 2>&1 || true' EXIT
+
           aws ecr get-login-password --region "$AWS_REGION" \
-            | docker login --username AWS --password-stdin "$REGISTRY_HOST"
+            | docker login --username AWS --password-stdin "$registry_host"
 
-          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$REGISTRY:$IMAGE_TAG"
-          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$REGISTRY:latest"
+          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$registry:$IMAGE_TAG"
+          docker tag "$IMAGE_NAME:$IMAGE_TAG" "$registry:latest"
 
-          docker push "$REGISTRY:$IMAGE_TAG"
-          docker push "$REGISTRY:latest"
+          docker push "$registry:$IMAGE_TAG"
+          docker push "$registry:latest"
         '''
       }
     }
@@ -88,10 +98,8 @@ pipeline {
 
   post {
     always {
-      // The login writes credentials into ~/.docker/config.json on the agent, so log
-      // out even when a stage failed. || true because logout is an error if the push
-      // stage never logged in.
-      sh 'docker logout "$REGISTRY_HOST" || true'
+      // The logout lives in the push stage's own trap, next to the registry host it
+      // needs, rather than here where the value would have to be recomputed.
       cleanWs()
     }
   }
