@@ -370,8 +370,15 @@ The **Docker Host URI** step, `tcp://172.17.0.40:2345` under *Manage Jenkins →
 unauthenticated, unencrypted Docker daemon socket is root on the host to anyone who can
 reach the port, and this pipeline never needed it: `docker build`, `docker tag` and
 `docker push` all run through the local CLI on the agent. It could not have worked as
-written either, since Docker listens on 2375 (plain) or 2376 (TLS), and `172.17.0.40` is a
-docker0 bridge address rather than anything reachable.
+written either: Docker's TCP socket is 2375 (plain) or 2376 (TLS), never 2345, and the
+daemon does not listen on TCP at all unless you configure it to.
+
+The address is worth a caveat rather than a flat claim. `172.17.0.0/16` is Docker's
+documented default for the `docker0` bridge, so `172.17.0.40` looks like a container
+address, which is not a thing to point a cloud configuration at. That default is not
+universal, though: on the machine these commands were checked on, Docker hands the default
+bridge `192.168.215.0/24` and a container came up on `192.168.215.2`. Either way the
+argument against the step is the unauthenticated socket and the wrong port, not the subnet.
 
 ## CircleCI
 
