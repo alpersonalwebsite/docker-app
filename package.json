@@ -1,18 +1,25 @@
 {
-  "name": "application",
+  "name": "docker-app",
   "version": "1.0.0",
-  "description": "Simple Express for Docker",
-  "main": "server.js",
+  "description": "Simple Express app packaged with Docker, pushed to Amazon ECR by a Jenkins pipeline and a CircleCI workflow",
+  "main": "app.js",
+  "engines": {
+    "node": ">=14"
+  },
   "scripts": {
     "start": "node server.js",
-    "lint": "./node_modules/.bin/eslint server.js constants.js"
+    "test": "node test/smoke.js",
+    "lint": "eslint app.js server.js constants.js test"
   },
   "keywords": [
     "express",
-    "docker"
+    "docker",
+    "jenkins",
+    "circleci",
+    "ecr"
   ],
-  "author": "",
-  "license": "ISC",
+  "author": "alpersonalwebsite",
+  "license": "MIT",
   "dependencies": {
     "express": "^4.17.1"
   },
