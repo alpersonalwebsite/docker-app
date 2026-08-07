@@ -1,2 +1,40 @@
+# The Dockerfile copies named files rather than `COPY . .`, so this list is defence in
+# depth rather than the only thing standing between the repository and the image. It is
+# still worth having: `docker build` sends the whole context to the daemon before the
+# first instruction runs, so anything not excluded here is transferred either way.
+
+# Git history. This was the real hole in the old two-line version: .git was 164K of
+# full history inside an image being pushed to a registry.
+.git
+.gitignore
+
+# Installed inside the image from the lockfile, and a host node_modules would be the
+# wrong platform anyway.
 node_modules
-npm-debug.log
+npm-debug.log*
+yarn-error.log*
+logs
+*.log
+
+# Build and CI configuration. None of it is needed at runtime and the Jenkinsfile names
+# an account and a region.
+Dockerfile
+.dockerignore
+Jenkinsfile
+.circleci
+.eslintrc.js
+
+# Docs and tests
+README.md
+LICENSE
+test
+
+# Local environment and anything that looks like a credential
+.env
+.env.*
+*.pem
+*.key
+credentials*
+secrets
+
+.DS_Store
