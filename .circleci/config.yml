@@ -1,9 +1,13 @@
 version: 2.1
 
 executors:
-  custom-executor:
+  # Pinned to the same Node the Dockerfile pins, and to cimg rather than the legacy
+  # circleci/ namespace, which CircleCI deprecated. The old executor was
+  # circleci/node:lts-browsers: a moving tag (so the Node under CI drifted with no
+  # commit) carrying a headless browser this project has no use for.
+  node:
     docker:
-      - image: circleci/node:lts-browsers
+      - image: cimg/node:14.21.3
 
 parameters:
   project_name:
@@ -15,70 +19,117 @@ parameters:
 
 jobs:
   build:
-    executor: custom-executor
+    executor: node
     steps:
       - checkout
-      - setup_remote_docker
       - restore_cache:
           key: dependency-cache-{{ checksum "package-lock.json" }}
+      # npm ci, not npm install. npm install may resolve past the lockfile; npm ci
+      # installs exactly what it pins and fails if the manifest and lock disagree.
       - run:
-          name: Installing local dependencies
-          command: npm install
+          name: Install dependencies
+          command: npm ci
       - save_cache:
           key: dependency-cache-{{ checksum "package-lock.json" }}
           paths:
             - node_modules
+      # node_modules only. The old config also persisted `src`, which does not exist in
+      # this repo (every source file is at the root), and the downstream jobs only
+      # appeared to work because `checkout` had already put the sources there.
       - persist_to_workspace:
-          root: /home/circleci/project
+          root: .
           paths:
-            - src
             - node_modules
 
   lint:
-    executor: custom-executor
+    executor: node
     steps:
       - checkout
       - attach_workspace:
-          at: /home/circleci/project
+          at: .
       - run:
           name: Lint
           command: npm run lint
 
+  # The workflow was already called build_test_deploy and had no test job.
+  test:
+    executor: node
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Test
+          command: npm test
+
   push:
-    executor: custom-executor
+    executor: node
     steps:
       - checkout
       - setup_remote_docker
-      - attach_workspace:
-          at: /home/circleci/project
+      # cimg/node ships no AWS CLI. The old config ran `sudo apt-get install awscli`
+      # with no apt-get update first, and Ubuntu's package is AWS CLI v1, which is the
+      # only reason `aws ecr get-login` below worked at all.
       - run:
-          name: Build docker image with NO cache
-          command: docker build --no-cache -t << pipeline.parameters.project_name >>:latest .
-      - run:
-          name: Tag the docker image
-          command: docker tag << pipeline.parameters.project_name >>:latest $AWS_ACCOUNT.dkr.ecr.<< pipeline.parameters.aws_region >>.amazonaws.com/<< pipeline.parameters.project_name >>:latest
-      - run:
-          name: Install AWS cli
-          command: sudo apt-get install awscli
-      - run:
-          name: Push image to ECR
+          name: Install the AWS CLI
           command: |
+            curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            sudo /tmp/aws/install
             aws --version
-            eval $(aws ecr get-login --region << pipeline.parameters.aws_region >>| sed 's/ \-e none//')
-            # newer versions eval $(aws ecr get-login --region << pipeline.parameters.aws_region >> --no-include-email)
-            docker push $AWS_ACCOUNT.dkr.ecr.<< pipeline.parameters.aws_region >>.amazonaws.com/<< pipeline.parameters.project_name >>:latest
+      - run:
+          name: Build the image
+          command: |
+            docker build -t "<< pipeline.parameters.project_name >>:${CIRCLE_SHA1:0:7}" .
+      # get-login-password piped into --password-stdin. The old step was
+      # `eval $(aws ecr get-login ... | sed 's/ \-e none//')`, which builds a
+      # `docker login -p <token>` command: the token lands in the process list and in
+      # the build log. `get-login` was also removed in AWS CLI v2.
+      #
+      # The account ID comes from STS rather than an AWS_ACCOUNT_ID variable, so there
+      # is one fewer thing to set and no chance of it disagreeing with the key.
+      # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY do come from the project's
+      # environment variables: CircleCI has no instance metadata, so unlike the Jenkins
+      # pipeline this one needs a key. Scope its IAM policy to ECR push on this one
+      # repository, as the README shows.
+      #
+      # This pushes ONLY the immutable SHA tag, where the Jenkins pipeline also moves
+      # :latest. That asymmetry is deliberate. Jenkins has disableConcurrentBuilds();
+      # CircleCI has no equivalent, so two master workflows can push at once and the one
+      # that finishes last wins :latest, which can leave the tag pointing at the older
+      # commit while both SHA tags are correct. A mutable tag that can silently go
+      # backwards is worse than no mutable tag, so promotion of :latest is left to the
+      # serialized pipeline or to a deliberate manual step.
+      - run:
+          name: Push to ECR
+          command: |
+            account=$(aws sts get-caller-identity --query Account --output text)
+            registry_host="${account}.dkr.ecr.<< pipeline.parameters.aws_region >>.amazonaws.com"
+            registry="${registry_host}/<< pipeline.parameters.project_name >>"
+            tag="${CIRCLE_SHA1:0:7}"
+
+            trap 'docker logout "$registry_host" >/dev/null 2>&1 || true' EXIT
+
+            aws ecr get-login-password --region "<< pipeline.parameters.aws_region >>" \
+              | docker login --username AWS --password-stdin "$registry_host"
+
+            docker tag "<< pipeline.parameters.project_name >>:${tag}" "${registry}:${tag}"
+            docker push "${registry}:${tag}"
 
 workflows:
-  version: 2
   build_test_deploy:
     jobs:
       - build
       - lint:
           requires:
             - build
+      - test:
+          requires:
+            - build
       - push:
           requires:
             - lint
+            - test
           filters:
             branches:
               only: master

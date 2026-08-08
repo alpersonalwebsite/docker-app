@@ -18,3 +18,21 @@ node_modules/
 
 # env
 .env
+.env.*
+
+# Keys and credentials. The Jenkins walkthrough in the README has you SSH with a .pem,
+# and the working directory people run that from is often the clone.
+*.pem
+*.key
+credentials*
+secrets/
+
+# Local databases
+*.sqlite
+*.db
+
+# Python, for the odd helper script
+__pycache__/
+
+# macOS
+.DS_Store
