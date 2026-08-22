@@ -15,11 +15,26 @@ const DEFAULT_PORT = 8080;
 //   PORT=8080.5   -> 8080.5     RangeError
 //   PORT=-1       -> -1         RangeError
 //
-// Unset or empty falls back to the default. Set-but-invalid throws here instead, with
-// a message naming the variable, because silently falling back would turn a typo in a
-// deployment config into a service listening on the wrong port.
+// ONLY UNSET falls back to the default. Set-but-invalid throws here instead, with a message
+// naming the variable, because silently falling back would turn a typo in a deployment config
+// into a service listening on the wrong port.
+//
+// An empty or whitespace-only value counts as invalid, not as absent: something put that
+// variable there and produced nothing, which is a configuration mistake worth saying out loud.
+// This used to special-case `value === ''` and fall back, while a whitespace-only value threw,
+// and the inconsistency was accidental rather than intended: `Number('   ')` is 0, which fails
+// the range check below, whereas `''` never reached it. Measured before the change:
+//
+//   PORT unset   -> 8080, exit 0
+//   PORT=""      -> 8080, exit 0     silently defaulted
+//   PORT="   "   -> exit 1           threw, for the reason above rather than by design
+//
+// Two identical situations behaving differently, so the `=== ''` clause is gone and both now
+// throw. This also aligns with the readers in node-express-mongo-redis,
+// node-express-postgresql-docker-compose and basic-apollo-graphql, which were written with this
+// reasoning from the start and which this file diverged from.
 const readPort = (value) => {
-  if (value === undefined || value === '') {
+  if (value === undefined) {
     return DEFAULT_PORT;
   }
 
