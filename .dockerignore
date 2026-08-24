@@ -29,9 +29,19 @@ README.md
 LICENSE
 test
 
-# Local environment and anything that looks like a credential
-.env
-.env.*
+# Local environment and anything that looks like a credential.
+#
+# The same two glob forms as .gitignore, and for a sharper reason: whatever is not excluded
+# here is transferred to the daemon before the first instruction runs. Measured against this
+# context with the previous `.env` plus `.env.*`, a `COPY . .` pulled in .envrc, audit.env,
+# production.env and staging.env, because `.env.*` requires a second dot and nothing matched
+# the suffix form at all.
+#
+# NO `!.env.example` here, deliberately, unlike .gitignore. These two files answer different
+# questions: .gitignore decides what may be committed, and the example template must be, while
+# this decides what the build receives, and it needs no example file.
+.env*
+*.env
 *.pem
 *.key
 credentials*
