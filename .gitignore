@@ -17,8 +17,19 @@ node_modules/
 .pnp.*
 
 # env
-.env
-.env.*
+#
+# BOTH glob forms, because neither implies the other, and this file used to have only one.
+# `.env*` is a prefix glob: it catches .env, .env.local, and .envrc, which direnv reads and
+# which people put exported credentials in. `*.env` is a suffix glob, for names like audit.env
+# or production.env. What was here was `.env` plus `.env.*`, and the dot is not cosmetic:
+# `.env.*` requires a SECOND dot, so it never matched .envrc, and nothing matched audit.env.
+#
+# The negation is the other half. `.env*` also matches .env.example, the one file in this
+# family you are meant to commit, so it is re-included. A negation has to follow the pattern
+# it undoes, since the last matching rule wins.
+.env*
+*.env
+!.env.example
 
 # Keys and credentials. The Jenkins walkthrough in the README has you SSH with a .pem,
 # and the working directory people run that from is often the clone.
@@ -27,8 +38,23 @@ node_modules/
 credentials*
 secrets/
 
-# Local databases
+# SSH private keys, which the patterns above do NOT cover, because an SSH key in its
+# default filename has no extension. Directly relevant here: the walkthrough above has
+# you SSH to a host, and a key generated on the spot is not called anything.pem.
+# `id_rsa*` alone is not enough either, since ssh-keygen's default type is ed25519 now
+# rather than rsa (man ssh-keygen: "ed25519 (the default)"). Enumerated rather than
+# globbed as `id_*`, which would also match ordinary source files.
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.ppk
+.ssh/
+
+# Local databases. Both sqlite spellings: the extension is a convention rather than a rule,
+# and .sqlite3 is at least as common as .sqlite.
 *.sqlite
+*.sqlite3
 *.db
 
 # Python, for the odd helper script
@@ -36,3 +62,12 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Editor directories. Not secrets, but they carry local paths and per-machine settings,
+# and every sibling repository in this series ignores them.
+#
+# `dist/` is deliberately NOT here: this project has no build step (the scripts are
+# start, test and lint), so a rule for a directory it never produces would be noise
+# rather than coverage.
+.idea/
+.vscode/
