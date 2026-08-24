@@ -38,6 +38,19 @@ node_modules/
 credentials*
 secrets/
 
+# SSH private keys, which the patterns above do NOT cover, because an SSH key in its
+# default filename has no extension. Directly relevant here: the walkthrough above has
+# you SSH to a host, and a key generated on the spot is not called anything.pem.
+# `id_rsa*` alone is not enough either, since ssh-keygen's default type is ed25519 now
+# rather than rsa (man ssh-keygen: "ed25519 (the default)"). Enumerated rather than
+# globbed as `id_*`, which would also match ordinary source files.
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.ppk
+.ssh/
+
 # Local databases. Both sqlite spellings: the extension is a convention rather than a rule,
 # and .sqlite3 is at least as common as .sqlite.
 *.sqlite
@@ -49,3 +62,12 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Editor directories. Not secrets, but they carry local paths and per-machine settings,
+# and every sibling repository in this series ignores them.
+#
+# `dist/` is deliberately NOT here: this project has no build step (the scripts are
+# start, test and lint), so a rule for a directory it never produces would be noise
+# rather than coverage.
+.idea/
+.vscode/
